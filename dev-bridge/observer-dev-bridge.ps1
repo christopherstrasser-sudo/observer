@@ -62,13 +62,13 @@ function Ensure-Repository {
     }
 
     Write-Log "INFO" "Cloning repository cache..."
-    Invoke-Git @("clone", "--branch", $Branch, "--single-branch", $Repository, $RepoDir) | Out-Null
+    Invoke-Git -Arguments @("clone", "--branch", $Branch, "--single-branch", $Repository, $RepoDir) | Out-Null
     Write-Log "OK" "Repository cache created."
 }
 
 function Get-LocalCommit {
     try {
-        return ((Invoke-Git @("-C", $RepoDir, "rev-parse", "HEAD")) | Select-Object -First 1).Trim()
+        return ((Invoke-Git -Arguments @("-C", $RepoDir, "rev-parse", "HEAD")) | Select-Object -First 1).Trim()
     }
     catch {
         return ""
@@ -76,7 +76,7 @@ function Get-LocalCommit {
 }
 
 function Get-RemoteCommit {
-    $result = Invoke-Git @("ls-remote", $Repository, "refs/heads/$Branch")
+    $result = Invoke-Git -Arguments @("ls-remote", $Repository, "refs/heads/$Branch")
     if (-not $result) {
         throw "Could not resolve remote branch '$Branch'."
     }
@@ -86,10 +86,10 @@ function Get-RemoteCommit {
 
 function Update-Repository {
     Write-Log "INFO" "Fetching latest '$Branch'..."
-    Invoke-Git @("-C", $RepoDir, "fetch", "--prune", "origin", $Branch) | Out-Null
-    Invoke-Git @("-C", $RepoDir, "checkout", "-f", $Branch) | Out-Null
-    Invoke-Git @("-C", $RepoDir, "reset", "--hard", "origin/$Branch") | Out-Null
-    Invoke-Git @("-C", $RepoDir, "clean", "-fdx") | Out-Null
+    Invoke-Git -Arguments @("-C", $RepoDir, "fetch", "--prune", "origin", $Branch) | Out-Null
+    Invoke-Git -Arguments @("-C", $RepoDir, "checkout", "-f", $Branch) | Out-Null
+    Invoke-Git -Arguments @("-C", $RepoDir, "reset", "--hard", "origin/$Branch") | Out-Null
+    Invoke-Git -Arguments @("-C", $RepoDir, "clean", "-fdx") | Out-Null
 }
 
 function Sync-Target {
