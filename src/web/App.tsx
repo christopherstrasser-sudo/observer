@@ -6,9 +6,11 @@ import {
   ChevronRight,
   CircleDot,
   Clipboard,
+  Download,
   Eye,
   Gauge,
   Layers3,
+  Link2,
   MonitorUp,
   Radio,
   Settings,
@@ -26,12 +28,24 @@ const emptyState: BroadcastState = {
   gsi: null,
   lastGsiAt: null,
   packetsReceived: 0,
+  rejectedPackets: 0,
+  lastGsiSource: null,
   serverStartedAt: Date.now()
 };
 
 const socket = io({
   transports: ["websocket", "polling"]
 });
+
+function defaultGsiTarget() {
+  const saved = localStorage.getItem("observer:gsi-target");
+  if (saved) {
+    return saved;
+  }
+
+  const hostname = window.location.hostname || "127.0.0.1";
+  return `http://${hostname}:3194/api/gsi`;
+}
 
 function useBroadcastState() {
   const [state, setState] = useState<BroadcastState>(emptyState);
@@ -130,6 +144,8 @@ function StatusPill({
 
 function ControlRoom({ state, socketConnected }: { state: BroadcastState; socketConnected: boolean }) {
   const [copied, setCopied] = useState(false);
+  const [downloaded, setDownloaded] = useState(false);
+  const [gsiTarget, setGsiTarget] = useState(defaultGsiTarget);
   const map = state.gsi?.map;
   const ct = map?.team_ct;
   const t = map?.team_t;
@@ -138,17 +154,41 @@ function ControlRoom({ state, socketConnected }: { state: BroadcastState; socket
   const aliveCt = players.filter((player) => player.team === "CT" && (player.state?.health ?? 0) > 0).length;
   const aliveT = players.filter((player) => player.team === "T" && (player.state?.health ?? 0) > 0).length;
 
+  useEffect(() => {
+    localStorage.setItem("observer:gsi-target", gsiTarget);
+  }, [gsiTarget]);
+
   const uptime = useMemo(() => {
     const minutes = Math.floor((Date.now() - state.serverStartedAt) / 60000);
     return minutes < 1 ? "< 1 min" : minutes + " min";
   }, [state.serverStartedAt, state.packetsReceived]);
 
+  async function getGsiConfig() {
+    const response = await fetch("/api/gsi/config?uri=" + encodeURIComponent(gsiTarget));
+    if (!response.ok) {
+      throw new Error("Could not generate GSI config");
+    }
+    return response.text();
+  }
+
   async function copyGsi() {
-    const response = await fetch("/api/gsi/config");
-    const value = await response.text();
+    const value = await getGsiConfig();
     await navigator.clipboard.writeText(value);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1600);
+  }
+
+  async function downloadGsi() {
+    const value = await getGsiConfig();
+    const blob = new Blob([value], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "gamestate_integration_observer.cfg";
+    anchor.click();
+    URL.revokeObjectURL(url);
+    setDownloaded(true);
+    window.setTimeout(() => setDownloaded(false), 1600);
   }
 
   return (
@@ -177,7 +217,7 @@ function ControlRoom({ state, socketConnected }: { state: BroadcastState; socket
           <button className="nav-item"><Settings size={18} />Settings</button>
           <div className="build-chip">
             <span>LOCAL CORE</span>
-            <strong>v0.1.0</strong>
+            <strong>v0.2.0</strong>
           </div>
         </div>
       </aside>
@@ -207,7 +247,7 @@ function ControlRoom({ state, socketConnected }: { state: BroadcastState; socket
             </p>
             <div className="hero-actions">
               <StatusPill active={gsiLive} activeText="CS2 data live" inactiveText="Waiting for CS2" />
-              <span className="hero-endpoint">127.0.0.1:3194/api/gsi</span>
+              <span className="hero-endpoint">{gsiTarget.replace(/^https?:\/\//, "")}</span>
             </div>
           </div>
 
@@ -222,7 +262,7 @@ function ControlRoom({ state, socketConnected }: { state: BroadcastState; socket
           <article className="metric-card">
             <div className="metric-icon"><Activity size={19} /></div>
             <div><span>GSI STATUS</span><strong>{gsiLive ? "Receiving" : "Standby"}</strong></div>
-            <small>{state.packetsReceived.toLocaleString()} packets</small>
+            <small>{state.packetsReceived.toLocaleString()} accepted</small>
           </article>
           <article className="metric-card">
             <div className="metric-icon"><Wifi size={19} /></div>
@@ -237,7 +277,7 @@ function ControlRoom({ state, socketConnected }: { state: BroadcastState; socket
           <article className="metric-card">
             <div className="metric-icon"><Shield size={19} /></div>
             <div><span>CORE UPTIME</span><strong>{uptime}</strong></div>
-            <small>Local engine</small>
+            <small>{state.rejectedPackets ? state.rejectedPackets + " rejected" : "Auth protected"}</small>
           </article>
         </section>
 
@@ -273,7 +313,7 @@ function ControlRoom({ state, socketConnected }: { state: BroadcastState; socket
               <div><span>PHASE</span><strong>{state.gsi?.phase_countdowns?.phase?.replaceAll("_", " ") || "Waiting"}</strong></div>
               <div><span>TIMER</span><strong>{state.gsi?.phase_countdowns?.phase_ends_in ? Number(state.gsi.phase_countdowns.phase_ends_in).toFixed(1) + "s" : "—"}</strong></div>
               <div><span>BOMB</span><strong>{state.gsi?.bomb?.state || state.gsi?.round?.bomb || "—"}</strong></div>
-              <div><span>PLAYERS</span><strong>{players.length || "—"}</strong></div>
+              <div><span>SOURCE</span><strong>{state.lastGsiSource || "—"}</strong></div>
             </div>
           </article>
 
@@ -287,20 +327,42 @@ function ControlRoom({ state, socketConnected }: { state: BroadcastState; socket
             </div>
 
             <p className="muted">
-              Place the Observer GSI config inside your CS2 cfg directory and
-              restart the game. The dashboard will switch to live automatically.
+              Enter the address your CS2 computer can reach. Use the server's LAN IP
+              when both machines share a network, or its Tailscale IP when they do not.
             </p>
 
-            <button className="config-button" onClick={copyGsi}>
-              <span>
-                <Clipboard size={18} />
+            <label className="endpoint-field">
+              <span><Link2 size={14} /> GSI TARGET URL</span>
+              <input
+                value={gsiTarget}
+                onChange={(event) => setGsiTarget(event.target.value)}
+                spellCheck={false}
+                placeholder="http://192.168.1.50:3194/api/gsi"
+              />
+            </label>
+
+            <div className="config-actions">
+              <button className="config-button" onClick={copyGsi}>
                 <span>
-                  <small>GAMESTATE CONFIG</small>
-                  <strong>{copied ? "Copied to clipboard" : "Copy Observer config"}</strong>
+                  <Clipboard size={18} />
+                  <span>
+                    <small>GAMESTATE CONFIG</small>
+                    <strong>{copied ? "Copied to clipboard" : "Copy config"}</strong>
+                  </span>
                 </span>
-              </span>
-              <ChevronRight size={18} />
-            </button>
+                <ChevronRight size={18} />
+              </button>
+
+              <button className="config-button config-button--secondary" onClick={downloadGsi}>
+                <span>
+                  <Download size={18} />
+                  <span>
+                    <small>READY TO DROP IN</small>
+                    <strong>{downloaded ? "Downloaded" : "Download .cfg"}</strong>
+                  </span>
+                </span>
+              </button>
+            </div>
 
             <div className="path-box">
               <span>TARGET FILE</span>
