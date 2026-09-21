@@ -417,7 +417,10 @@ function KillfeedRow({
       </div>
 
       <div className="killfeed-weapon">
-        <strong>{weaponLabel(event.weapon)}</strong>
+        <div className="killfeed-weapon__badge">
+          <Crosshair size={10} />
+          <strong>{weaponLabel(event.weapon)}</strong>
+        </div>
         <div className="killfeed-modifiers">
           {event.headshot ? <span className="killfeed-modifier killfeed-modifier--hs">HS</span> : null}
           {event.wallbang ? <span className="killfeed-modifier">WB</span> : null}
