@@ -7,6 +7,7 @@ import {
   ChevronRight,
   CircleDot,
   Clipboard,
+  Crosshair,
   Download,
   Eye,
   Gauge,
@@ -27,7 +28,7 @@ import {
   WifiOff
 } from "lucide-react";
 import { io } from "socket.io-client";
-import type { BroadcastConfig, BroadcastEvent, BroadcastState, GsiPlayer, GsiTeam, TeamBranding } from "../shared/types";
+import type { BroadcastConfig, BroadcastEvent, BroadcastState, GsiPlayer, GsiTeam, KillfeedEvent, TeamBranding } from "../shared/types";
 
 const emptyBroadcastConfig: BroadcastConfig = {
   eventName: "OBSERVER MATCH",
@@ -58,6 +59,7 @@ const emptyState: BroadcastState = {
   rejectedPackets: 0,
   lastGsiSource: null,
   broadcastEvents: [],
+  killfeed: [],
   config: emptyBroadcastConfig,
   serverStartedAt: Date.now()
 };
@@ -395,6 +397,63 @@ function BroadcastEventBanner({ event }: { event: BroadcastEvent }) {
   );
 }
 
+function KillfeedRow({
+  event,
+  config
+}: {
+  event: KillfeedEvent;
+  config: BroadcastConfig;
+}) {
+  const killerTeam = event.killerSide ? teamForSide(config, event.killerSide) : null;
+  const victimTeam = event.victimSide ? teamForSide(config, event.victimSide) : null;
+
+  return (
+    <div className="killfeed-row">
+      <div
+        className="killfeed-player killfeed-player--killer"
+        style={{ "--kill-color": killerTeam?.color ?? "#dbe4f2" } as CSSProperties}
+      >
+        <span>{event.killerName}</span>
+      </div>
+
+      <div className="killfeed-weapon">
+        <strong>{weaponLabel(event.weapon)}</strong>
+        <div className="killfeed-modifiers">
+          {event.headshot ? <span className="killfeed-modifier killfeed-modifier--hs">HS</span> : null}
+          {event.wallbang ? <span className="killfeed-modifier">WB</span> : null}
+          {event.noscope ? <span className="killfeed-modifier">NS</span> : null}
+          {event.throughSmoke ? <span className="killfeed-modifier">SMK</span> : null}
+        </div>
+      </div>
+
+      <div
+        className="killfeed-player killfeed-player--victim"
+        style={{ "--kill-color": victimTeam?.color ?? "#98a2b3" } as CSSProperties}
+      >
+        <span>{event.victimName}</span>
+      </div>
+    </div>
+  );
+}
+
+function KillfeedStack({
+  events,
+  config
+}: {
+  events: KillfeedEvent[];
+  config: BroadcastConfig;
+}) {
+  if (!events.length) return null;
+
+  return (
+    <section className="killfeed-stack">
+      {events.map((event) => (
+        <KillfeedRow key={event.id} event={event} config={config} />
+      ))}
+    </section>
+  );
+}
+
 function TeamMark({ team }: { team: TeamBranding }) {
   if (team.logoDataUrl) {
     return <img className="team-mark__logo" src={team.logoDataUrl} alt="" />;
@@ -413,11 +472,16 @@ function BroadcastOverlay({ state }: { state: BroadcastState }) {
   const tPlayers = getTeamPlayers(state.gsi?.allplayers, "T");
   const focusedSteamId = state.gsi?.player?.steamid;
   const bombState = state.gsi?.bomb?.state || state.gsi?.round?.bomb;
+  const [overlayNow, setOverlayNow] = useState(Date.now());
   const activeEvent = [...(state.broadcastEvents ?? [])]
     .reverse()
-    .find((event) => Date.now() - event.createdAt < 5_500);
+    .find((event) => overlayNow - event.createdAt < 5_500);
 
   const config = state.config ?? emptyBroadcastConfig;
+  const visibleKills = [...(state.killfeed ?? [])]
+    .filter((event) => overlayNow - event.createdAt < 8_500)
+    .slice(-5)
+    .reverse();
   const ctBranding = teamForSide(config, "CT");
   const tBranding = teamForSide(config, "T");
   const ctScore = ct?.score ?? 0;
@@ -428,6 +492,11 @@ function BroadcastOverlay({ state }: { state: BroadcastState }) {
     : config.productionStatus === "tactical_pause"
       ? "TACTICAL PAUSE"
       : null;
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setOverlayNow(Date.now()), 400);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     document.documentElement.classList.add("overlay-mode");
@@ -491,6 +560,7 @@ function BroadcastOverlay({ state }: { state: BroadcastState }) {
       ) : null}
 
       {activeEvent ? <BroadcastEventBanner event={activeEvent} /> : null}
+      <KillfeedStack events={visibleKills} config={config} />
 
       {ctPlayers.length ? (
         <TeamRail
@@ -690,6 +760,10 @@ function ControlRoom({ state, socketConnected }: { state: BroadcastState; socket
     reader.readAsDataURL(file);
   }
 
+  async function testKillfeed() {
+    await fetch("/api/events/kill/test", { method: "POST" });
+  }
+
   async function getGsiConfig() {
     const response = await fetch("/api/gsi/config?uri=" + encodeURIComponent(gsiTarget));
     if (!response.ok) {
@@ -744,7 +818,7 @@ function ControlRoom({ state, socketConnected }: { state: BroadcastState; socket
           <button className="nav-item"><Settings size={18} />Settings</button>
           <div className="build-chip">
             <span>LOCAL CORE</span>
-            <strong>v0.4.0</strong>
+            <strong>v0.5.0</strong>
           </div>
         </div>
       </aside>
@@ -929,10 +1003,16 @@ function ControlRoom({ state, socketConnected }: { state: BroadcastState; socket
               <h3>Broadcast Setup</h3>
               <p>Branding, series state and production status are persisted locally on the Observer server.</p>
             </div>
-            <button className="save-config-button" onClick={() => saveMatchConfig()}>
-              <Save size={16} />
-              {configSaved ? "Saved" : "Save setup"}
-            </button>
+            <div className="broadcast-setup__actions">
+              <button className="test-killfeed-button" onClick={testKillfeed}>
+                <Crosshair size={16} />
+                Test killfeed
+              </button>
+              <button className="save-config-button" onClick={() => saveMatchConfig()}>
+                <Save size={16} />
+                {configSaved ? "Saved" : "Save setup"}
+              </button>
+            </div>
           </div>
 
           {configError ? <div className="config-error">{configError}</div> : null}
