@@ -1854,3 +1854,85 @@ body.overlay-mode {
     width: 350px;
   }
 }
+
+
+/* Killfeed placement + motion polish */
+.killfeed-stack {
+  top: 34px;
+  right: 24px;
+  width: 388px;
+  gap: 4px;
+}
+
+.killfeed-row {
+  min-height: 34px;
+  padding: 4px 7px 4px 9px;
+  border-radius: 7px;
+  animation:
+    observer-killfeed-in 240ms cubic-bezier(.2,.8,.2,1) both,
+    observer-killfeed-out 340ms ease-in 8s forwards;
+}
+
+.killfeed-player span {
+  font-size: 9px;
+}
+
+.killfeed-weapon {
+  min-width: 92px;
+  gap: 4px;
+}
+
+.killfeed-weapon__badge {
+  min-width: 62px;
+  height: 22px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid rgba(255,255,255,.075);
+  border-radius: 5px;
+  color: #cbd5e3;
+  background: rgba(255,255,255,.025);
+}
+
+.killfeed-weapon__badge svg {
+  flex: 0 0 auto;
+  color: #78869a;
+}
+
+.killfeed-weapon__badge strong {
+  max-width: 68px;
+  overflow: hidden;
+  color: #dce4ef;
+  font-size: 7px;
+  font-weight: 900;
+  letter-spacing: .035em;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.killfeed-modifier {
+  min-width: 17px;
+  height: 13px;
+  font-size: 5px;
+}
+
+@keyframes observer-killfeed-out {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+}
+
+@media (max-width: 1500px) {
+  .killfeed-stack {
+    top: 28px;
+    right: 18px;
+    width: 350px;
+  }
+}
