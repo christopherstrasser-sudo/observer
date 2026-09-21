@@ -22,7 +22,7 @@ import {
   WifiOff
 } from "lucide-react";
 import { io } from "socket.io-client";
-import type { BroadcastState, GsiTeam } from "../shared/types";
+import type { BroadcastState, GsiPlayer, GsiTeam } from "../shared/types";
 
 const emptyState: BroadcastState = {
   gsi: null,
@@ -82,12 +82,214 @@ function teamLabel(team: GsiTeam | undefined, fallback: string) {
   return team?.name?.trim() || fallback;
 }
 
+function weaponLabel(rawName?: string) {
+  if (!rawName) return "—";
+
+  const aliases: Record<string, string> = {
+    ak47: "AK-47",
+    m4a1: "M4A4",
+    m4a1_silencer: "M4A1-S",
+    awp: "AWP",
+    ssg08: "SSG 08",
+    aug: "AUG",
+    sg556: "SG 553",
+    famas: "FAMAS",
+    galilar: "GALIL",
+    mp9: "MP9",
+    mac10: "MAC-10",
+    mp7: "MP7",
+    mp5sd: "MP5-SD",
+    ump45: "UMP-45",
+    p90: "P90",
+    bizon: "PP-BIZON",
+    deagle: "DEAGLE",
+    elite: "DUALIES",
+    fiveseven: "FIVE-SEVEN",
+    cz75a: "CZ75",
+    hkp2000: "P2000",
+    usp_silencer: "USP-S",
+    glock: "GLOCK",
+    tec9: "TEC-9",
+    p250: "P250",
+    revolver: "R8",
+    nova: "NOVA",
+    xm1014: "XM1014",
+    mag7: "MAG-7",
+    sawedoff: "SAWED-OFF",
+    m249: "M249",
+    negev: "NEGEV",
+    knife: "KNIFE",
+    knife_t: "KNIFE",
+    taser: "ZEUS"
+  };
+
+  const key = rawName.replace(/^weapon_/, "");
+  return aliases[key] ?? key.replaceAll("_", " ").toUpperCase();
+}
+
+function utilityLabel(rawName?: string) {
+  const key = rawName?.replace(/^weapon_/, "");
+  const labels: Record<string, string> = {
+    hegrenade: "HE",
+    flashbang: "FB",
+    smokegrenade: "SG",
+    molotov: "MO",
+    incgrenade: "IN",
+    decoy: "DC"
+  };
+
+  return key ? labels[key] ?? null : null;
+}
+
+function getActiveWeapon(player: GsiPlayer) {
+  const weapons = Object.values(player.weapons ?? {});
+  return weapons.find((weapon) => weapon.state === "active")
+    ?? weapons.find((weapon) => weapon.type !== "Grenade" && !weapon.name?.includes("c4"))
+    ?? null;
+}
+
+function getUtility(player: GsiPlayer) {
+  return Object.values(player.weapons ?? {})
+    .filter((weapon) => weapon.type === "Grenade")
+    .map((weapon) => utilityLabel(weapon.name))
+    .filter((label): label is string => Boolean(label));
+}
+
+function getTeamPlayers(allPlayers: Record<string, GsiPlayer> | undefined, team: "CT" | "T") {
+  return Object.entries(allPlayers ?? {})
+    .map(([steamid, player]) => ({ ...player, steamid: player.steamid ?? steamid }))
+    .filter((player) => player.team === team)
+    .sort((a, b) => (a.observer_slot ?? 99) - (b.observer_slot ?? 99));
+}
+
+function PlayerCard({
+  player,
+  side,
+  focused
+}: {
+  player: GsiPlayer;
+  side: "CT" | "T";
+  focused: boolean;
+}) {
+  const health = Math.max(0, Math.min(100, player.state?.health ?? 0));
+  const armor = Math.max(0, Math.min(100, player.state?.armor ?? 0));
+  const alive = health > 0;
+  const activeWeapon = getActiveWeapon(player);
+  const utility = getUtility(player);
+  const hasBomb = Object.values(player.weapons ?? {}).some((weapon) => weapon.name?.includes("c4"));
+
+  return (
+    <div
+      className={[
+        "player-card",
+        `player-card--${side.toLowerCase()}`,
+        alive ? "is-alive" : "is-dead",
+        focused ? "is-focused" : ""
+      ].join(" ")}
+    >
+      <div className="player-card__accent" />
+
+      <div className="player-card__top">
+        <div className="player-card__slot">{player.observer_slot ?? "·"}</div>
+        <div className="player-card__identity">
+          <strong>{player.name || "Unknown"}</strong>
+          <span>
+            {player.match_stats?.kills ?? 0} K
+            <i>/</i>
+            {player.match_stats?.deaths ?? 0} D
+            <i>/</i>
+            {player.match_stats?.assists ?? 0} A
+          </span>
+        </div>
+        <div className="player-card__money">${(player.state?.money ?? 0).toLocaleString()}</div>
+      </div>
+
+      <div className="player-card__middle">
+        <div className="player-card__vitals">
+          <div className="vital-number">{health}</div>
+          <div className="vital-bars">
+            <span className="vital-bars__hp"><i style={{ width: `${health}%` }} /></span>
+            <span className="vital-bars__armor"><i style={{ width: `${armor}%` }} /></span>
+          </div>
+          <div className="armor-value">
+            <Shield size={11} />
+            {armor}
+            {player.state?.helmet ? <b>H</b> : null}
+          </div>
+        </div>
+
+        <div className="player-card__weapon">
+          <strong>{weaponLabel(activeWeapon?.name)}</strong>
+          <span>
+            {activeWeapon?.ammo_clip !== undefined
+              ? `${activeWeapon.ammo_clip}/${activeWeapon.ammo_reserve ?? 0}`
+              : alive ? "READY" : "OUT"}
+          </span>
+        </div>
+      </div>
+
+      <div className="player-card__bottom">
+        <div className="utility-row">
+          {utility.length
+            ? utility.map((grenade, index) => <span key={grenade + index}>{grenade}</span>)
+            : <span className="utility-empty">NO UTIL</span>}
+        </div>
+        <div className="status-badges">
+          {hasBomb ? <span className="status-badge status-badge--bomb">C4</span> : null}
+          {player.state?.defusekit ? <span className="status-badge status-badge--kit">KIT</span> : null}
+          {focused ? <span className="status-badge status-badge--focus">OBS</span> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TeamRail({
+  side,
+  players,
+  focusedSteamId
+}: {
+  side: "CT" | "T";
+  players: GsiPlayer[];
+  focusedSteamId?: string;
+}) {
+  const totalMoney = players.reduce((sum, player) => sum + (player.state?.money ?? 0), 0);
+  const alive = players.filter((player) => (player.state?.health ?? 0) > 0).length;
+
+  return (
+    <section className={`player-rail player-rail--${side.toLowerCase()}`}>
+      <header className="player-rail__header">
+        <span>{side === "CT" ? "COUNTER-TERRORISTS" : "TERRORISTS"}</span>
+        <div>
+          <strong>{alive}/{players.length || 5}</strong>
+          <small>${totalMoney.toLocaleString()}</small>
+        </div>
+      </header>
+
+      <div className="player-rail__cards">
+        {players.map((player, index) => (
+          <PlayerCard
+            key={player.steamid ?? player.name ?? index}
+            player={player}
+            side={side}
+            focused={Boolean(focusedSteamId && player.steamid === focusedSteamId)}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function BroadcastOverlay({ state }: { state: BroadcastState }) {
   const map = state.gsi?.map;
   const ct = map?.team_ct;
   const t = map?.team_t;
   const phase = state.gsi?.phase_countdowns;
   const live = state.lastGsiAt !== null && Date.now() - state.lastGsiAt < 5000;
+  const ctPlayers = getTeamPlayers(state.gsi?.allplayers, "CT");
+  const tPlayers = getTeamPlayers(state.gsi?.allplayers, "T");
+  const focusedSteamId = state.gsi?.player?.steamid;
+  const bombState = state.gsi?.bomb?.state || state.gsi?.round?.bomb;
 
   useEffect(() => {
     document.documentElement.classList.add("overlay-mode");
@@ -113,6 +315,9 @@ function BroadcastOverlay({ state }: { state: BroadcastState }) {
             <strong>{phase?.phase_ends_in ? Number(phase.phase_ends_in).toFixed(1) : "--:--"}</strong>
             <span>{phase?.phase?.replaceAll("_", " ").toUpperCase() || "WAITING FOR GSI"}</span>
           </div>
+          {bombState && bombState !== "undefined" ? (
+            <div className={`bomb-state bomb-state--${bombState}`}>{bombState.toUpperCase()}</div>
+          ) : null}
         </div>
 
         <div className="scorebug__team scorebug__team--t">
@@ -121,6 +326,14 @@ function BroadcastOverlay({ state }: { state: BroadcastState }) {
           <span className="scorebug__side">T</span>
         </div>
       </div>
+
+      {live && ctPlayers.length ? (
+        <TeamRail side="CT" players={ctPlayers} focusedSteamId={focusedSteamId} />
+      ) : null}
+
+      {live && tPlayers.length ? (
+        <TeamRail side="T" players={tPlayers} focusedSteamId={focusedSteamId} />
+      ) : null}
     </main>
   );
 }
