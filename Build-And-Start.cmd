@@ -12,7 +12,7 @@ if errorlevel 1 (
 
 if not exist "node_modules\" (
     echo [OBSERVER] Installing dependencies...
-    call npm install
+    call npm install --no-package-lock
     if errorlevel 1 exit /b 1
 )
 
