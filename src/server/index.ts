@@ -123,6 +123,10 @@ function buildGsiConfig(uri: string) {
     '    "allplayers_state" "1"',
     '    "allplayers_match_stats" "1"',
     '    "allplayers_weapons" "1"',
+    '    "allplayers_position" "1"',
+    '    "allgrenades" "1"',
+    '    "map_round_wins" "1"',
+    '    "player_position" "1"',
     '    "bomb" "1"',
     '    "phase_countdowns" "1"',
     "  }",
@@ -134,7 +138,7 @@ app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
     service: "observer",
-    version: "0.2.0",
+    version: "0.2.1",
     uptimeSeconds: Math.round(process.uptime()),
     gsiConnected: state.lastGsiAt !== null && Date.now() - state.lastGsiAt < 5000,
     gsiAuth: true
