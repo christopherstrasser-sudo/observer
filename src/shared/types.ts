@@ -86,6 +86,25 @@ export interface GsiPayload {
   };
 }
 
+
+export interface TeamBranding {
+  name: string;
+  shortName: string;
+  color: string;
+  logoDataUrl: string;
+  seriesWins: number;
+}
+
+export interface BroadcastConfig {
+  eventName: string;
+  bestOf: 1 | 3 | 5;
+  mapNumber: number;
+  productionStatus: "live" | "tactical_pause" | "tech_pause";
+  team1Side: "CT" | "T";
+  team1: TeamBranding;
+  team2: TeamBranding;
+}
+
 export interface BroadcastEvent {
   id: string;
   type: "round_win" | "clutch" | "ace";
@@ -103,5 +122,6 @@ export interface BroadcastState {
   rejectedPackets: number;
   lastGsiSource: string | null;
   broadcastEvents: BroadcastEvent[];
+  config: BroadcastConfig;
   serverStartedAt: number;
 }
