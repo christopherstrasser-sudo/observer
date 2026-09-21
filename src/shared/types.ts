@@ -20,6 +20,7 @@ export interface GsiPlayerState {
   health?: number;
   armor?: number;
   helmet?: boolean;
+  defusekit?: boolean;
   flashed?: number;
   smoked?: number;
   burning?: number;
