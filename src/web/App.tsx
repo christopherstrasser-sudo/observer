@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ChangeEvent, type CSSProperties } from "react";
 import {
   Activity,
+  ArrowLeftRight,
   Braces,
   Check,
   ChevronRight,
@@ -12,17 +13,43 @@ import {
   Layers3,
   Link2,
   MonitorUp,
+  Pause,
+  Play,
   Radio,
+  Save,
   Settings,
   Shield,
   Sparkles,
   Swords,
+  Upload,
   UsersRound,
   Wifi,
   WifiOff
 } from "lucide-react";
 import { io } from "socket.io-client";
-import type { BroadcastEvent, BroadcastState, GsiPlayer, GsiTeam } from "../shared/types";
+import type { BroadcastConfig, BroadcastEvent, BroadcastState, GsiPlayer, GsiTeam, TeamBranding } from "../shared/types";
+
+const emptyBroadcastConfig: BroadcastConfig = {
+  eventName: "OBSERVER MATCH",
+  bestOf: 3,
+  mapNumber: 1,
+  productionStatus: "live",
+  team1Side: "CT",
+  team1: {
+    name: "Team Alpha",
+    shortName: "ALPHA",
+    color: "#71e7ff",
+    logoDataUrl: "",
+    seriesWins: 0
+  },
+  team2: {
+    name: "Team Bravo",
+    shortName: "BRAVO",
+    color: "#ffbd75",
+    logoDataUrl: "",
+    seriesWins: 0
+  }
+};
 
 const emptyState: BroadcastState = {
   gsi: null,
@@ -31,6 +58,7 @@ const emptyState: BroadcastState = {
   rejectedPackets: 0,
   lastGsiSource: null,
   broadcastEvents: [],
+  config: emptyBroadcastConfig,
   serverStartedAt: Date.now()
 };
 
@@ -65,6 +93,7 @@ function useBroadcastState() {
     const disconnect = () => setSocketConnected(false);
 
     socket.on("state:init", init);
+    socket.on("state:update", update);
     socket.on("gsi:update", update);
     socket.on("connect", connect);
     socket.on("disconnect", disconnect);
@@ -76,6 +105,7 @@ function useBroadcastState() {
 
     return () => {
       socket.off("state:init", init);
+      socket.off("state:update", update);
       socket.off("gsi:update", update);
       socket.off("connect", connect);
       socket.off("disconnect", disconnect);
@@ -87,6 +117,32 @@ function useBroadcastState() {
 
 function teamLabel(team: GsiTeam | undefined, fallback: string) {
   return team?.name?.trim() || fallback;
+}
+
+function teamForSide(config: BroadcastConfig, side: "CT" | "T") {
+  const team1OnSide = config.team1Side === side;
+  return team1OnSide ? config.team1 : config.team2;
+}
+
+function roundStateLabel(
+  ctScore: number,
+  tScore: number,
+  ctTeam: TeamBranding,
+  tTeam: TeamBranding
+) {
+  if (ctScore >= 12 && tScore >= 12) {
+    return { label: "OVERTIME", tone: "overtime" };
+  }
+
+  if (ctScore === 12 && tScore < 12) {
+    return { label: `${ctTeam.shortName} MATCH POINT`, tone: "matchpoint" };
+  }
+
+  if (tScore === 12 && ctScore < 12) {
+    return { label: `${tTeam.shortName} MATCH POINT`, tone: "matchpoint" };
+  }
+
+  return null;
 }
 
 function formatRoundClock(rawSeconds?: string | number) {
@@ -289,19 +345,24 @@ function PlayerCard({
 function TeamRail({
   side,
   players,
-  focusedSteamId
+  focusedSteamId,
+  branding
 }: {
   side: "CT" | "T";
   players: GsiPlayer[];
   focusedSteamId?: string;
+  branding: TeamBranding;
 }) {
   const totalMoney = players.reduce((sum, player) => sum + (player.state?.money ?? 0), 0);
   const alive = players.filter((player) => (player.state?.health ?? 0) > 0).length;
 
   return (
-    <section className={`player-rail player-rail--${side.toLowerCase()}`}>
+    <section
+      className={`player-rail player-rail--${side.toLowerCase()}`}
+      style={{ "--team-color": branding.color } as CSSProperties}
+    >
       <header className="player-rail__header">
-        <span>{side === "CT" ? "COUNTER-TERRORISTS" : "TERRORISTS"}</span>
+        <span>{branding.name}</span>
         <div>
           <strong>{alive}/{players.length || 5}</strong>
           <small>${totalMoney.toLocaleString()}</small>
@@ -334,6 +395,14 @@ function BroadcastEventBanner({ event }: { event: BroadcastEvent }) {
   );
 }
 
+function TeamMark({ team }: { team: TeamBranding }) {
+  if (team.logoDataUrl) {
+    return <img className="team-mark__logo" src={team.logoDataUrl} alt="" />;
+  }
+
+  return <span className="team-mark__fallback">{team.shortName.slice(0, 2)}</span>;
+}
+
 function BroadcastOverlay({ state }: { state: BroadcastState }) {
   const map = state.gsi?.map;
   const ct = map?.team_ct;
@@ -348,6 +417,18 @@ function BroadcastOverlay({ state }: { state: BroadcastState }) {
     .reverse()
     .find((event) => Date.now() - event.createdAt < 5_500);
 
+  const config = state.config ?? emptyBroadcastConfig;
+  const ctBranding = teamForSide(config, "CT");
+  const tBranding = teamForSide(config, "T");
+  const ctScore = ct?.score ?? 0;
+  const tScore = t?.score ?? 0;
+  const roundState = roundStateLabel(ctScore, tScore, ctBranding, tBranding);
+  const productionLabel = config.productionStatus === "tech_pause"
+    ? "TECH PAUSE"
+    : config.productionStatus === "tactical_pause"
+      ? "TACTICAL PAUSE"
+      : null;
+
   useEffect(() => {
     document.documentElement.classList.add("overlay-mode");
     document.body.classList.add("overlay-mode");
@@ -359,11 +440,21 @@ function BroadcastOverlay({ state }: { state: BroadcastState }) {
 
   return (
     <main className="broadcast-stage">
+      <div className="scorebug__series">
+        <span>{config.eventName}</span>
+        <strong>MAP {config.mapNumber} · BO{config.bestOf}</strong>
+        <span>{config.team1.shortName} {config.team1.seriesWins} — {config.team2.seriesWins} {config.team2.shortName}</span>
+      </div>
+
       <div className={"scorebug " + (!live ? "scorebug--waiting" : "")}>
-        <div className="scorebug__team scorebug__team--ct">
+        <div
+          className="scorebug__team scorebug__team--ct"
+          style={{ "--team-color": ctBranding.color } as CSSProperties}
+        >
           <span className="scorebug__side">CT</span>
-          <strong>{teamLabel(ct, "TEAM ALPHA")}</strong>
-          <span className="scorebug__score">{ct?.score ?? 0}</span>
+          <TeamMark team={ctBranding} />
+          <strong>{ctBranding.name}</strong>
+          <span className="scorebug__score">{ctScore}</span>
         </div>
 
         <div className="scorebug__center">
@@ -377,21 +468,46 @@ function BroadcastOverlay({ state }: { state: BroadcastState }) {
           ) : null}
         </div>
 
-        <div className="scorebug__team scorebug__team--t">
-          <span className="scorebug__score">{t?.score ?? 0}</span>
-          <strong>{teamLabel(t, "TEAM BRAVO")}</strong>
+        <div
+          className="scorebug__team scorebug__team--t"
+          style={{ "--team-color": tBranding.color } as CSSProperties}
+        >
+          <span className="scorebug__score">{tScore}</span>
+          <strong>{tBranding.name}</strong>
+          <TeamMark team={tBranding} />
           <span className="scorebug__side">T</span>
         </div>
       </div>
 
+      {productionLabel ? (
+        <div className={`production-state production-state--${config.productionStatus}`}>
+          <Pause size={12} />
+          {productionLabel}
+        </div>
+      ) : roundState ? (
+        <div className={`production-state production-state--${roundState.tone}`}>
+          {roundState.label}
+        </div>
+      ) : null}
+
       {activeEvent ? <BroadcastEventBanner event={activeEvent} /> : null}
 
       {ctPlayers.length ? (
-        <TeamRail side="CT" players={ctPlayers} focusedSteamId={focusedSteamId} />
+        <TeamRail
+          side="CT"
+          players={ctPlayers}
+          focusedSteamId={focusedSteamId}
+          branding={ctBranding}
+        />
       ) : null}
 
       {tPlayers.length ? (
-        <TeamRail side="T" players={tPlayers} focusedSteamId={focusedSteamId} />
+        <TeamRail
+          side="T"
+          players={tPlayers}
+          focusedSteamId={focusedSteamId}
+          branding={tBranding}
+        />
       ) : null}
     </main>
   );
@@ -414,10 +530,81 @@ function StatusPill({
   );
 }
 
+function TeamSetupCard({
+  title,
+  team,
+  side,
+  onChange,
+  onLogo
+}: {
+  title: string;
+  team: TeamBranding;
+  side: "CT" | "T";
+  onChange: (next: TeamBranding) => void;
+  onLogo: (event: ChangeEvent<HTMLInputElement>) => void;
+}) {
+  return (
+    <div className="team-setup-card" style={{ "--team-color": team.color } as CSSProperties}>
+      <div className="team-setup-card__head">
+        <div className="team-setup-logo">
+          {team.logoDataUrl
+            ? <img src={team.logoDataUrl} alt="" />
+            : <span>{team.shortName.slice(0, 2)}</span>}
+        </div>
+        <div>
+          <span>{title} · CURRENT SIDE {side}</span>
+          <strong>{team.name}</strong>
+        </div>
+      </div>
+
+      <div className="setup-fields">
+        <label>
+          <span>TEAM NAME</span>
+          <input value={team.name} onChange={(e) => onChange({ ...team, name: e.target.value })} />
+        </label>
+        <label>
+          <span>SHORT NAME</span>
+          <input
+            value={team.shortName}
+            maxLength={12}
+            onChange={(e) => onChange({ ...team, shortName: e.target.value.toUpperCase() })}
+          />
+        </label>
+        <label>
+          <span>COLOR</span>
+          <div className="color-input">
+            <input type="color" value={team.color} onChange={(e) => onChange({ ...team, color: e.target.value })} />
+            <code>{team.color}</code>
+          </div>
+        </label>
+        <label>
+          <span>SERIES WINS</span>
+          <input
+            type="number"
+            min={0}
+            max={3}
+            value={team.seriesWins}
+            onChange={(e) => onChange({ ...team, seriesWins: Number(e.target.value) })}
+          />
+        </label>
+      </div>
+
+      <label className="logo-upload">
+        <Upload size={15} />
+        <span>{team.logoDataUrl ? "Replace team logo" : "Upload team logo"}</span>
+        <input type="file" accept="image/png,image/jpeg,image/webp" onChange={onLogo} />
+      </label>
+    </div>
+  );
+}
+
 function ControlRoom({ state, socketConnected }: { state: BroadcastState; socketConnected: boolean }) {
   const [copied, setCopied] = useState(false);
   const [downloaded, setDownloaded] = useState(false);
   const [gsiTarget, setGsiTarget] = useState(defaultGsiTarget);
+  const [matchConfig, setMatchConfig] = useState<BroadcastConfig>(state.config ?? emptyBroadcastConfig);
+  const [configSaved, setConfigSaved] = useState(false);
+  const [configError, setConfigError] = useState("");
   const map = state.gsi?.map;
   const ct = map?.team_ct;
   const t = map?.team_t;
@@ -432,10 +619,76 @@ function ControlRoom({ state, socketConnected }: { state: BroadcastState; socket
     localStorage.setItem("observer:gsi-target", gsiTarget);
   }, [gsiTarget]);
 
+  const configKey = JSON.stringify(state.config ?? emptyBroadcastConfig);
+  useEffect(() => {
+    setMatchConfig(state.config ?? emptyBroadcastConfig);
+  }, [configKey]);
+
   const uptime = useMemo(() => {
     const minutes = Math.floor((Date.now() - state.serverStartedAt) / 60000);
     return minutes < 1 ? "< 1 min" : minutes + " min";
   }, [state.serverStartedAt, state.packetsReceived]);
+
+  async function saveMatchConfig(next = matchConfig) {
+    setConfigError("");
+
+    const response = await fetch("/api/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(next)
+    });
+
+    if (!response.ok) {
+      setConfigError("Could not save match setup.");
+      return;
+    }
+
+    const saved = await response.json() as BroadcastConfig;
+    setMatchConfig(saved);
+    setConfigSaved(true);
+    window.setTimeout(() => setConfigSaved(false), 1500);
+  }
+
+  async function setProductionStatus(status: BroadcastConfig["productionStatus"]) {
+    const next = { ...matchConfig, productionStatus: status };
+    setMatchConfig(next);
+    await saveMatchConfig(next);
+  }
+
+  async function swapTeamSides() {
+    const response = await fetch("/api/config/swap-sides", { method: "POST" });
+    if (!response.ok) {
+      setConfigError("Could not swap team sides.");
+      return;
+    }
+
+    const saved = await response.json() as BroadcastConfig;
+    setMatchConfig(saved);
+  }
+
+  function handleLogo(teamKey: "team1" | "team2", event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 900_000) {
+      setConfigError("Team logos must be smaller than 900 KB.");
+      event.target.value = "";
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== "string") return;
+      setMatchConfig((current) => ({
+        ...current,
+        [teamKey]: {
+          ...current[teamKey],
+          logoDataUrl: reader.result as string
+        }
+      }));
+    };
+    reader.readAsDataURL(file);
+  }
 
   async function getGsiConfig() {
     const response = await fetch("/api/gsi/config?uri=" + encodeURIComponent(gsiTarget));
@@ -491,7 +744,7 @@ function ControlRoom({ state, socketConnected }: { state: BroadcastState; socket
           <button className="nav-item"><Settings size={18} />Settings</button>
           <div className="build-chip">
             <span>LOCAL CORE</span>
-            <strong>v0.3.0</strong>
+            <strong>v0.4.0</strong>
           </div>
         </div>
       </aside>
@@ -568,7 +821,7 @@ function ControlRoom({ state, socketConnected }: { state: BroadcastState; socket
             <div className="versus">
               <div className="team team--ct">
                 <span className="team-side">COUNTER-TERRORISTS</span>
-                <strong>{teamLabel(ct, "TEAM ALPHA")}</strong>
+                <strong>{teamForSide(matchConfig, "CT").name}</strong>
                 <div className="team-meta">{aliveCt || 0} alive</div>
               </div>
               <div className="score">
@@ -578,7 +831,7 @@ function ControlRoom({ state, socketConnected }: { state: BroadcastState; socket
               </div>
               <div className="team team--t">
                 <span className="team-side">TERRORISTS</span>
-                <strong>{teamLabel(t, "TEAM BRAVO")}</strong>
+                <strong>{teamForSide(matchConfig, "T").name}</strong>
                 <div className="team-meta">{aliveT || 0} alive</div>
               </div>
             </div>
@@ -667,6 +920,109 @@ function ControlRoom({ state, socketConnected }: { state: BroadcastState; socket
               <code>game\csgo\cfg\gamestate_integration_observer.cfg</code>
             </div>
           </article>
+        </section>
+
+        <section className="panel broadcast-setup">
+          <div className="broadcast-setup__heading">
+            <div>
+              <span className="eyebrow">MATCH CONTROL</span>
+              <h3>Broadcast Setup</h3>
+              <p>Branding, series state and production status are persisted locally on the Observer server.</p>
+            </div>
+            <button className="save-config-button" onClick={() => saveMatchConfig()}>
+              <Save size={16} />
+              {configSaved ? "Saved" : "Save setup"}
+            </button>
+          </div>
+
+          {configError ? <div className="config-error">{configError}</div> : null}
+
+          <div className="broadcast-setup__grid">
+            <TeamSetupCard
+              title="TEAM 1"
+              team={matchConfig.team1}
+              side={matchConfig.team1Side}
+              onChange={(team1) => setMatchConfig({ ...matchConfig, team1 })}
+              onLogo={(event) => handleLogo("team1", event)}
+            />
+
+            <div className="series-setup-card">
+              <div>
+                <span className="setup-label">EVENT / MATCH</span>
+                <input
+                  className="setup-main-input"
+                  value={matchConfig.eventName}
+                  onChange={(e) => setMatchConfig({ ...matchConfig, eventName: e.target.value })}
+                />
+              </div>
+
+              <div className="series-setup-row">
+                <label>
+                  <span>FORMAT</span>
+                  <select
+                    value={matchConfig.bestOf}
+                    onChange={(e) => {
+                      const bestOf = Number(e.target.value) as 1 | 3 | 5;
+                      setMatchConfig({
+                        ...matchConfig,
+                        bestOf,
+                        mapNumber: Math.min(matchConfig.mapNumber, bestOf)
+                      });
+                    }}
+                  >
+                    <option value={1}>BO1</option>
+                    <option value={3}>BO3</option>
+                    <option value={5}>BO5</option>
+                  </select>
+                </label>
+                <label>
+                  <span>MAP</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={matchConfig.bestOf}
+                    value={matchConfig.mapNumber}
+                    onChange={(e) => setMatchConfig({ ...matchConfig, mapNumber: Number(e.target.value) })}
+                  />
+                </label>
+              </div>
+
+              <button className="swap-sides-button" onClick={swapTeamSides}>
+                <ArrowLeftRight size={16} />
+                Swap sides
+                <small>{matchConfig.team1.shortName}: {matchConfig.team1Side}</small>
+              </button>
+
+              <div className="production-controls">
+                <button
+                  className={matchConfig.productionStatus === "live" ? "is-active" : ""}
+                  onClick={() => setProductionStatus("live")}
+                >
+                  <Play size={14} /> Live
+                </button>
+                <button
+                  className={matchConfig.productionStatus === "tactical_pause" ? "is-active" : ""}
+                  onClick={() => setProductionStatus("tactical_pause")}
+                >
+                  <Pause size={14} /> Tactical
+                </button>
+                <button
+                  className={matchConfig.productionStatus === "tech_pause" ? "is-active" : ""}
+                  onClick={() => setProductionStatus("tech_pause")}
+                >
+                  <Pause size={14} /> Tech
+                </button>
+              </div>
+            </div>
+
+            <TeamSetupCard
+              title="TEAM 2"
+              team={matchConfig.team2}
+              side={matchConfig.team1Side === "CT" ? "T" : "CT"}
+              onChange={(team2) => setMatchConfig({ ...matchConfig, team2 })}
+              onLogo={(event) => handleLogo("team2", event)}
+            />
+          </div>
         </section>
 
         <footer className="footer">
