@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Server } from "socket.io";
-import type { BroadcastState, GsiPayload } from "../shared/types.js";
+import type { BroadcastEvent, BroadcastState, GsiPayload, GsiPlayer } from "../shared/types.js";
 
 const PORT = Number(process.env.PORT || 3194);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -55,6 +55,7 @@ const state: BroadcastState = {
   packetsReceived: 0,
   rejectedPackets: 0,
   lastGsiSource: null,
+  broadcastEvents: [],
   serverStartedAt: Date.now()
 };
 
@@ -99,7 +100,7 @@ function normalizeGsiUri(raw: unknown, req: express.Request) {
 
 function buildGsiConfig(uri: string) {
   return [
-    '"Observer v0.2.1"',
+    '"Observer v0.3.0"',
     "{",
     `  "uri" "${uri}"`,
     '  "timeout" "5.0"',
@@ -138,7 +139,7 @@ app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
     service: "observer",
-    version: "0.2.1",
+    version: "0.3.0",
     uptimeSeconds: Math.round(process.uptime()),
     gsiConnected: state.lastGsiAt !== null && Date.now() - state.lastGsiAt < 20_000,
     gsiAuth: true
@@ -166,6 +167,87 @@ app.get("/api/gsi/config", (req, res) => {
     .send(buildGsiConfig(uri));
 });
 
+
+let eventCounter = 0;
+
+function playerEntries(payload: GsiPayload | null | undefined) {
+  return Object.entries(payload?.allplayers ?? {}).map(([steamid, player]) => ({
+    ...player,
+    steamid: player.steamid ?? steamid
+  }));
+}
+
+function teamName(payload: GsiPayload, side: "CT" | "T") {
+  return side === "CT"
+    ? payload.map?.team_ct?.name?.trim() || "Counter-Terrorists"
+    : payload.map?.team_t?.name?.trim() || "Terrorists";
+}
+
+function pushBroadcastEvent(event: Omit<BroadcastEvent, "id" | "createdAt">) {
+  const now = Date.now();
+  state.broadcastEvents = state.broadcastEvents.filter((item) => now - item.createdAt < 15_000);
+
+  const next: BroadcastEvent = {
+    ...event,
+    id: `${now}-${eventCounter++}`,
+    createdAt: now
+  };
+
+  state.broadcastEvents.push(next);
+  io.emit("broadcast:event", next);
+}
+
+function detectBroadcastEvents(previous: GsiPayload | null, current: GsiPayload) {
+  const round = current.map?.round ?? -1;
+  const previousRound = previous?.map?.round ?? -1;
+  const winner = current.round?.win_team;
+  const previousWinner = previous?.round?.win_team;
+
+  if (winner && (winner !== previousWinner || round !== previousRound)) {
+    const winners = playerEntries(current).filter((player) => player.team === winner);
+    const aliveWinners = winners.filter((player) => (player.state?.health ?? 0) > 0);
+    const winnerLabel = teamName(current, winner);
+
+    if (aliveWinners.length === 1) {
+      const clutchPlayer = aliveWinners[0];
+      pushBroadcastEvent({
+        type: "clutch",
+        title: "CLUTCH",
+        subtitle: `${clutchPlayer.name || "Player"} closes the round for ${winnerLabel}`,
+        side: winner,
+        playerName: clutchPlayer.name
+      });
+    } else {
+      pushBroadcastEvent({
+        type: "round_win",
+        title: `${winnerLabel} WIN THE ROUND`,
+        subtitle: round >= 0 ? `Round ${round + 1}` : undefined,
+        side: winner
+      });
+    }
+  }
+
+  const currentPlayers = playerEntries(current);
+  const previousPlayers = new Map(
+    playerEntries(previous).map((player) => [player.steamid, player] as const)
+  );
+
+  for (const player of currentPlayers) {
+    const currentKills = player.state?.round_kills ?? 0;
+    const previousKills = previousPlayers.get(player.steamid)?.state?.round_kills ?? 0;
+
+    if (currentKills >= 5 && previousKills < 5) {
+      pushBroadcastEvent({
+        type: "ace",
+        title: "ACE",
+        subtitle: `${player.name || "Player"} eliminates the entire enemy team`,
+        side: player.team,
+        playerName: player.name
+      });
+    }
+  }
+}
+
 app.post("/api/gsi", (req, res) => {
   const payload = req.body as GsiPayload;
 
@@ -175,7 +257,11 @@ app.post("/api/gsi", (req, res) => {
     return;
   }
 
+  const previous = state.gsi;
+  detectBroadcastEvents(previous, payload);
+
   state.gsi = payload;
+  state.broadcastEvents = state.broadcastEvents.filter((item) => Date.now() - item.createdAt < 15_000);
   state.lastGsiAt = Date.now();
   state.lastGsiSource = req.ip || req.socket.remoteAddress || null;
   state.packetsReceived += 1;
