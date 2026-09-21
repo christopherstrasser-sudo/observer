@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Server } from "socket.io";
-import type { BroadcastConfig, BroadcastEvent, BroadcastState, GsiPayload } from "../shared/types.js";
+import type { BroadcastConfig, BroadcastEvent, BroadcastState, GsiPayload, KillfeedEvent } from "../shared/types.js";
 
 const PORT = Number(process.env.PORT || 3194);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -161,6 +161,7 @@ const state: BroadcastState = {
   rejectedPackets: 0,
   lastGsiSource: null,
   broadcastEvents: [],
+  killfeed: [],
   config: loadBroadcastConfig(),
   serverStartedAt: Date.now()
 };
@@ -206,7 +207,7 @@ function normalizeGsiUri(raw: unknown, req: express.Request) {
 
 function buildGsiConfig(uri: string) {
   return [
-    '"Observer v0.4.0"',
+    '"Observer v0.5.0"',
     "{",
     `  "uri" "${uri}"`,
     '  "timeout" "5.0"',
@@ -245,7 +246,7 @@ app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
     service: "observer",
-    version: "0.4.0",
+    version: "0.5.0",
     uptimeSeconds: Math.round(process.uptime()),
     gsiConnected: state.lastGsiAt !== null && Date.now() - state.lastGsiAt < 20_000,
     gsiAuth: true
@@ -277,6 +278,67 @@ app.post("/api/config/swap-sides", (_req, res) => {
   res.json(state.config);
 });
 
+
+
+app.post("/api/events/kill", (req, res) => {
+  if (!externalEventAuthorized(req)) {
+    res.status(401).json({ error: "Invalid Observer token" });
+    return;
+  }
+
+  const body = req.body ?? {};
+  const killerName = cleanText(body.killerName, "", 64);
+  const victimName = cleanText(body.victimName, "", 64);
+
+  if (!killerName || !victimName) {
+    res.status(400).json({ error: "killerName and victimName are required" });
+    return;
+  }
+
+  const killerSide = body.killerSide === "CT" || body.killerSide === "T" ? body.killerSide : undefined;
+  const victimSide = body.victimSide === "CT" || body.victimSide === "T" ? body.victimSide : undefined;
+
+  const event = pushKillfeedEvent({
+    killerName,
+    killerSteamId: typeof body.killerSteamId === "string" ? body.killerSteamId.slice(0, 32) : undefined,
+    killerSide,
+    victimName,
+    victimSteamId: typeof body.victimSteamId === "string" ? body.victimSteamId.slice(0, 32) : undefined,
+    victimSide,
+    weapon: normalizeWeaponName(body.weapon),
+    headshot: Boolean(body.headshot),
+    wallbang: Boolean(body.wallbang),
+    noscope: Boolean(body.noscope),
+    throughSmoke: Boolean(body.throughSmoke),
+    source: "external"
+  });
+
+  res.status(201).json(event);
+});
+
+app.post("/api/events/kill/test", (_req, res) => {
+  const players = playerEntries(state.gsi);
+  const killer = players.find((player) => player.team === "CT") ?? players[0];
+  const victim = players.find((player) => player.team === "T" && player.steamid !== killer?.steamid)
+    ?? players.find((player) => player.steamid !== killer?.steamid);
+
+  const event = pushKillfeedEvent({
+    killerName: killer?.name || teamName(state.gsi ?? {}, "CT"),
+    killerSteamId: killer?.steamid,
+    killerSide: killer?.team ?? "CT",
+    victimName: victim?.name || teamName(state.gsi ?? {}, "T"),
+    victimSteamId: victim?.steamid,
+    victimSide: victim?.team ?? "T",
+    weapon: "ak47",
+    headshot: true,
+    wallbang: false,
+    noscope: false,
+    throughSmoke: false,
+    source: "test"
+  });
+
+  res.status(201).json(event);
+});
 
 app.get("/api/gsi/info", (req, res) => {
   res.json({
@@ -313,6 +375,126 @@ function teamName(payload: GsiPayload, side: "CT" | "T") {
     || (side === "CT"
       ? payload.map?.team_ct?.name?.trim() || "Counter-Terrorists"
       : payload.map?.team_t?.name?.trim() || "Terrorists");
+}
+
+
+let killfeedCounter = 0;
+
+function pruneKillfeed() {
+  const now = Date.now();
+  state.killfeed = state.killfeed
+    .filter((item) => now - item.createdAt < 10_000)
+    .slice(-6);
+}
+
+function normalizeWeaponName(value: unknown) {
+  if (typeof value !== "string" || !value.trim()) return "unknown";
+  return value.trim().replace(/^weapon_/, "").slice(0, 48);
+}
+
+function activeWeaponName(player: ReturnType<typeof playerEntries>[number] | undefined) {
+  if (!player) return "unknown";
+
+  const weapons = Object.values(player.weapons ?? {});
+  const active = weapons.find((weapon) => weapon.state === "active")
+    ?? weapons.find((weapon) => weapon.type !== "Grenade" && !weapon.name?.includes("c4"));
+
+  return normalizeWeaponName(active?.name);
+}
+
+function sameKill(a: KillfeedEvent, b: Pick<KillfeedEvent, "killerName" | "victimName" | "createdAt">) {
+  return a.killerName === b.killerName
+    && a.victimName === b.victimName
+    && Math.abs(a.createdAt - b.createdAt) < 1_500;
+}
+
+function pushKillfeedEvent(event: Omit<KillfeedEvent, "id" | "createdAt"> & { createdAt?: number }) {
+  pruneKillfeed();
+
+  const createdAt = event.createdAt ?? Date.now();
+  const candidate = { ...event, createdAt };
+
+  if (event.source === "gsi_inferred") {
+    const exactAlreadyExists = state.killfeed.some(
+      (item) => item.source === "external" && sameKill(item, candidate)
+    );
+    if (exactAlreadyExists) return null;
+  }
+
+  if (event.source === "external") {
+    state.killfeed = state.killfeed.filter(
+      (item) => !(item.source === "gsi_inferred" && sameKill(item, candidate))
+    );
+  }
+
+  const next: KillfeedEvent = {
+    ...event,
+    id: `${createdAt}-kill-${killfeedCounter++}`,
+    createdAt
+  };
+
+  state.killfeed.push(next);
+  state.killfeed = state.killfeed.slice(-6);
+  io.emit("killfeed:event", next);
+  io.emit("state:update", state);
+  return next;
+}
+
+function detectKillfeed(previous: GsiPayload | null, current: GsiPayload) {
+  if (!previous) return;
+
+  const previousPlayers = new Map(
+    playerEntries(previous).map((player) => [player.steamid, player] as const)
+  );
+  const currentPlayers = playerEntries(current);
+
+  const deaths = currentPlayers.filter((player) => {
+    const before = previousPlayers.get(player.steamid);
+    return (before?.state?.health ?? 0) > 0 && (player.state?.health ?? 0) <= 0;
+  });
+
+  const killers = currentPlayers
+    .map((player) => {
+      const before = previousPlayers.get(player.steamid);
+      const killDelta = (player.match_stats?.kills ?? 0) - (before?.match_stats?.kills ?? 0);
+      const hsDelta = (player.state?.round_killhs ?? 0) - (before?.state?.round_killhs ?? 0);
+      return { player, before, killDelta, hsDelta };
+    })
+    .filter((entry) => entry.killDelta === 1);
+
+  // GSI has no native kill event. Only infer when the packet transition is unambiguous:
+  // exactly one player died and exactly one player gained exactly one kill.
+  if (deaths.length !== 1 || killers.length !== 1) return;
+
+  const victim = deaths[0];
+  const killerEntry = killers[0];
+  const killer = killerEntry.player;
+
+  if (!killer.name || !victim.name || killer.steamid === victim.steamid) return;
+
+  pushKillfeedEvent({
+    killerName: killer.name,
+    killerSteamId: killer.steamid,
+    killerSide: killer.team,
+    victimName: victim.name,
+    victimSteamId: victim.steamid,
+    victimSide: victim.team,
+    weapon: activeWeaponName(killer) !== "unknown"
+      ? activeWeaponName(killer)
+      : activeWeaponName(killerEntry.before),
+    headshot: killerEntry.hsDelta > 0,
+    wallbang: false,
+    noscope: false,
+    throughSmoke: false,
+    source: "gsi_inferred"
+  });
+}
+
+function externalEventAuthorized(req: express.Request) {
+  const headerToken = req.get("x-observer-token")?.trim();
+  const bearer = req.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
+  const bodyToken = typeof req.body?.token === "string" ? req.body.token.trim() : undefined;
+  return tokenMatches(headerToken ?? bearer ?? bodyToken);
 }
 
 function pushBroadcastEvent(event: Omit<BroadcastEvent, "id" | "createdAt">) {
@@ -391,8 +573,10 @@ app.post("/api/gsi", (req, res) => {
 
   const previous = state.gsi;
   detectBroadcastEvents(previous, payload);
+  detectKillfeed(previous, payload);
 
   state.gsi = payload;
+  pruneKillfeed();
   state.broadcastEvents = state.broadcastEvents.filter((item) => Date.now() - item.createdAt < 15_000);
   state.lastGsiAt = Date.now();
   state.lastGsiSource = req.ip || req.socket.remoteAddress || null;
