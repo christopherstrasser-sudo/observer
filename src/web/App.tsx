@@ -37,6 +37,12 @@ const socket = io({
   transports: ["websocket", "polling"]
 });
 
+const GSI_STALE_AFTER_MS = 20_000;
+
+function isGsiFresh(lastGsiAt: number | null) {
+  return lastGsiAt !== null && Date.now() - lastGsiAt < GSI_STALE_AFTER_MS;
+}
+
 function defaultGsiTarget() {
   const saved = localStorage.getItem("observer:gsi-target");
   if (saved) {
@@ -285,7 +291,7 @@ function BroadcastOverlay({ state }: { state: BroadcastState }) {
   const ct = map?.team_ct;
   const t = map?.team_t;
   const phase = state.gsi?.phase_countdowns;
-  const live = state.lastGsiAt !== null && Date.now() - state.lastGsiAt < 5000;
+  const live = isGsiFresh(state.lastGsiAt);
   const ctPlayers = getTeamPlayers(state.gsi?.allplayers, "CT");
   const tPlayers = getTeamPlayers(state.gsi?.allplayers, "T");
   const focusedSteamId = state.gsi?.player?.steamid;
@@ -327,11 +333,11 @@ function BroadcastOverlay({ state }: { state: BroadcastState }) {
         </div>
       </div>
 
-      {live && ctPlayers.length ? (
+      {ctPlayers.length ? (
         <TeamRail side="CT" players={ctPlayers} focusedSteamId={focusedSteamId} />
       ) : null}
 
-      {live && tPlayers.length ? (
+      {tPlayers.length ? (
         <TeamRail side="T" players={tPlayers} focusedSteamId={focusedSteamId} />
       ) : null}
     </main>
@@ -362,8 +368,10 @@ function ControlRoom({ state, socketConnected }: { state: BroadcastState; socket
   const map = state.gsi?.map;
   const ct = map?.team_ct;
   const t = map?.team_t;
-  const gsiLive = state.lastGsiAt !== null && Date.now() - state.lastGsiAt < 5000;
+  const gsiLive = isGsiFresh(state.lastGsiAt);
   const players = Object.values(state.gsi?.allplayers ?? {});
+  const hasFullObserverData = players.length > 0;
+  const hasBasicGsiData = state.packetsReceived > 0;
   const aliveCt = players.filter((player) => player.team === "CT" && (player.state?.health ?? 0) > 0).length;
   const aliveT = players.filter((player) => player.team === "T" && (player.state?.health ?? 0) > 0).length;
 
@@ -430,7 +438,7 @@ function ControlRoom({ state, socketConnected }: { state: BroadcastState; socket
           <button className="nav-item"><Settings size={18} />Settings</button>
           <div className="build-chip">
             <span>LOCAL CORE</span>
-            <strong>v0.2.0</strong>
+            <strong>v0.2.1</strong>
           </div>
         </div>
       </aside>
@@ -543,6 +551,30 @@ function ControlRoom({ state, socketConnected }: { state: BroadcastState; socket
               Enter the address your CS2 computer can reach. Use the server's LAN IP
               when both machines share a network, or its Tailscale IP when they do not.
             </p>
+
+            {hasBasicGsiData && !hasFullObserverData ? (
+              <div className="gsi-diagnostic">
+                <div className="gsi-diagnostic__icon"><Eye size={17} /></div>
+                <div>
+                  <strong>Basic GSI connected — observer data missing</strong>
+                  <span>
+                    Score and map data are arriving. Full player panels, round timer,
+                    weapons and utility appear when this CS2 client is spectating a match,
+                    demo or CSTV/GOTV feed.
+                  </span>
+                </div>
+              </div>
+            ) : null}
+
+            {hasFullObserverData ? (
+              <div className="gsi-diagnostic gsi-diagnostic--ok">
+                <div className="gsi-diagnostic__icon"><Check size={17} /></div>
+                <div>
+                  <strong>Full observer feed detected</strong>
+                  <span>{players.length} players are available to the broadcast HUD.</span>
+                </div>
+              </div>
+            ) : null}
 
             <label className="endpoint-field">
               <span><Link2 size={14} /> GSI TARGET URL</span>
