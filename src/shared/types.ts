@@ -86,11 +86,22 @@ export interface GsiPayload {
   };
 }
 
+export interface BroadcastEvent {
+  id: string;
+  type: "round_win" | "clutch" | "ace";
+  title: string;
+  subtitle?: string;
+  side?: "CT" | "T";
+  playerName?: string;
+  createdAt: number;
+}
+
 export interface BroadcastState {
   gsi: GsiPayload | null;
   lastGsiAt: number | null;
   packetsReceived: number;
   rejectedPackets: number;
   lastGsiSource: string | null;
+  broadcastEvents: BroadcastEvent[];
   serverStartedAt: number;
 }
