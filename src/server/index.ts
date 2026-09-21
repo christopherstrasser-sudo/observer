@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Server } from "socket.io";
-import type { BroadcastEvent, BroadcastState, GsiPayload, GsiPlayer } from "../shared/types.js";
+import type { BroadcastConfig, BroadcastEvent, BroadcastState, GsiPayload } from "../shared/types.js";
 
 const PORT = Number(process.env.PORT || 3194);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -16,6 +16,7 @@ const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, "../..");
 const dataPath = path.join(projectRoot, "data");
 const tokenPath = path.join(dataPath, "gsi-token.txt");
+const broadcastConfigPath = path.join(dataPath, "broadcast-config.json");
 const distPath = path.resolve(__dirname, "../../dist");
 
 function loadOrCreateGsiToken() {
@@ -40,6 +41,110 @@ function loadOrCreateGsiToken() {
 
 const GSI_TOKEN = loadOrCreateGsiToken();
 
+const defaultBroadcastConfig: BroadcastConfig = {
+  eventName: "OBSERVER MATCH",
+  bestOf: 3,
+  mapNumber: 1,
+  productionStatus: "live",
+  team1Side: "CT",
+  team1: {
+    name: "Team Alpha",
+    shortName: "ALPHA",
+    color: "#71e7ff",
+    logoDataUrl: "",
+    seriesWins: 0
+  },
+  team2: {
+    name: "Team Bravo",
+    shortName: "BRAVO",
+    color: "#ffbd75",
+    logoDataUrl: "",
+    seriesWins: 0
+  }
+};
+
+function clampInt(value: unknown, min: number, max: number, fallback: number) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(parsed)));
+}
+
+function cleanText(value: unknown, fallback: string, max = 64) {
+  return typeof value === "string" && value.trim()
+    ? value.trim().slice(0, max)
+    : fallback;
+}
+
+function cleanColor(value: unknown, fallback: string) {
+  return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value)
+    ? value
+    : fallback;
+}
+
+function cleanLogo(value: unknown) {
+  if (typeof value !== "string") return "";
+  if (!value) return "";
+  if (!value.startsWith("data:image/")) return "";
+  return value.length <= 1_500_000 ? value : "";
+}
+
+function sanitizeBroadcastConfig(raw: Partial<BroadcastConfig> | undefined): BroadcastConfig {
+  const candidate = raw ?? {};
+  const bestOf = candidate.bestOf === 1 || candidate.bestOf === 3 || candidate.bestOf === 5
+    ? candidate.bestOf
+    : defaultBroadcastConfig.bestOf;
+  const productionStatus = candidate.productionStatus === "tactical_pause"
+    || candidate.productionStatus === "tech_pause"
+    || candidate.productionStatus === "live"
+    ? candidate.productionStatus
+    : defaultBroadcastConfig.productionStatus;
+  const team1Side = candidate.team1Side === "T" ? "T" : "CT";
+
+  return {
+    eventName: cleanText(candidate.eventName, defaultBroadcastConfig.eventName, 72),
+    bestOf,
+    mapNumber: clampInt(candidate.mapNumber, 1, bestOf, 1),
+    productionStatus,
+    team1Side,
+    team1: {
+      name: cleanText(candidate.team1?.name, defaultBroadcastConfig.team1.name, 40),
+      shortName: cleanText(candidate.team1?.shortName, defaultBroadcastConfig.team1.shortName, 12).toUpperCase(),
+      color: cleanColor(candidate.team1?.color, defaultBroadcastConfig.team1.color),
+      logoDataUrl: cleanLogo(candidate.team1?.logoDataUrl),
+      seriesWins: clampInt(candidate.team1?.seriesWins, 0, 3, 0)
+    },
+    team2: {
+      name: cleanText(candidate.team2?.name, defaultBroadcastConfig.team2.name, 40),
+      shortName: cleanText(candidate.team2?.shortName, defaultBroadcastConfig.team2.shortName, 12).toUpperCase(),
+      color: cleanColor(candidate.team2?.color, defaultBroadcastConfig.team2.color),
+      logoDataUrl: cleanLogo(candidate.team2?.logoDataUrl),
+      seriesWins: clampInt(candidate.team2?.seriesWins, 0, 3, 0)
+    }
+  };
+}
+
+function loadBroadcastConfig() {
+  mkdirSync(dataPath, { recursive: true });
+
+  if (!existsSync(broadcastConfigPath)) {
+    writeFileSync(broadcastConfigPath, JSON.stringify(defaultBroadcastConfig, null, 2) + "\n", "utf8");
+    return defaultBroadcastConfig;
+  }
+
+  try {
+    const parsed = JSON.parse(readFileSync(broadcastConfigPath, "utf8")) as Partial<BroadcastConfig>;
+    return sanitizeBroadcastConfig(parsed);
+  } catch {
+    return defaultBroadcastConfig;
+  }
+}
+
+function saveBroadcastConfig(config: BroadcastConfig) {
+  mkdirSync(dataPath, { recursive: true });
+  writeFileSync(broadcastConfigPath, JSON.stringify(config, null, 2) + "\n", "utf8");
+}
+
+
 const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
@@ -56,11 +161,12 @@ const state: BroadcastState = {
   rejectedPackets: 0,
   lastGsiSource: null,
   broadcastEvents: [],
+  config: loadBroadcastConfig(),
   serverStartedAt: Date.now()
 };
 
 app.use(cors());
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "4mb" }));
 
 function tokenMatches(candidate: unknown) {
   if (typeof candidate !== "string") {
@@ -100,7 +206,7 @@ function normalizeGsiUri(raw: unknown, req: express.Request) {
 
 function buildGsiConfig(uri: string) {
   return [
-    '"Observer v0.3.0"',
+    '"Observer v0.4.0"',
     "{",
     `  "uri" "${uri}"`,
     '  "timeout" "5.0"',
@@ -139,7 +245,7 @@ app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
     service: "observer",
-    version: "0.3.0",
+    version: "0.4.0",
     uptimeSeconds: Math.round(process.uptime()),
     gsiConnected: state.lastGsiAt !== null && Date.now() - state.lastGsiAt < 20_000,
     gsiAuth: true
@@ -149,6 +255,28 @@ app.get("/api/health", (_req, res) => {
 app.get("/api/state", (_req, res) => {
   res.json(state);
 });
+
+app.get("/api/config", (_req, res) => {
+  res.json(state.config);
+});
+
+app.put("/api/config", (req, res) => {
+  state.config = sanitizeBroadcastConfig(req.body as Partial<BroadcastConfig>);
+  saveBroadcastConfig(state.config);
+  io.emit("state:update", state);
+  res.json(state.config);
+});
+
+app.post("/api/config/swap-sides", (_req, res) => {
+  state.config = {
+    ...state.config,
+    team1Side: state.config.team1Side === "CT" ? "T" : "CT"
+  };
+  saveBroadcastConfig(state.config);
+  io.emit("state:update", state);
+  res.json(state.config);
+});
+
 
 app.get("/api/gsi/info", (req, res) => {
   res.json({
@@ -178,9 +306,13 @@ function playerEntries(payload: GsiPayload | null | undefined) {
 }
 
 function teamName(payload: GsiPayload, side: "CT" | "T") {
-  return side === "CT"
-    ? payload.map?.team_ct?.name?.trim() || "Counter-Terrorists"
-    : payload.map?.team_t?.name?.trim() || "Terrorists";
+  const team1OnSide = state.config.team1Side === side;
+  const configured = team1OnSide ? state.config.team1.name : state.config.team2.name;
+
+  return configured
+    || (side === "CT"
+      ? payload.map?.team_ct?.name?.trim() || "Counter-Terrorists"
+      : payload.map?.team_t?.name?.trim() || "Terrorists");
 }
 
 function pushBroadcastEvent(event: Omit<BroadcastEvent, "id" | "createdAt">) {
