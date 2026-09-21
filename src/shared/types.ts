@@ -55,6 +55,9 @@ export interface GsiPlayer {
 }
 
 export interface GsiPayload {
+  auth?: {
+    token?: string;
+  };
   provider?: {
     name?: string;
     appid?: number;
@@ -86,5 +89,7 @@ export interface BroadcastState {
   gsi: GsiPayload | null;
   lastGsiAt: number | null;
   packetsReceived: number;
+  rejectedPackets: number;
+  lastGsiSource: string | null;
   serverStartedAt: number;
 }
