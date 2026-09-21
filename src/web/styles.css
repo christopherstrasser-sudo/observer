@@ -1010,3 +1010,53 @@ body.overlay-mode {
     grid-template-columns: 112px minmax(0,1fr);
   }
 }
+
+
+.gsi-diagnostic {
+  margin-top: 18px;
+  padding: 13px 14px;
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  gap: 11px;
+  align-items: start;
+  border: 1px solid rgba(255,189,117,.14);
+  border-radius: 12px;
+  background: rgba(255,189,117,.045);
+}
+
+.gsi-diagnostic--ok {
+  border-color: rgba(110,242,177,.14);
+  background: rgba(110,242,177,.045);
+}
+
+.gsi-diagnostic__icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  color: #ffcc95;
+  background: rgba(255,189,117,.08);
+}
+
+.gsi-diagnostic--ok .gsi-diagnostic__icon {
+  color: #83efbc;
+  background: rgba(110,242,177,.08);
+}
+
+.gsi-diagnostic strong,
+.gsi-diagnostic span {
+  display: block;
+}
+
+.gsi-diagnostic strong {
+  color: #e7edf7;
+  font-size: 11px;
+}
+
+.gsi-diagnostic span {
+  margin-top: 4px;
+  color: #7f899a;
+  font-size: 10px;
+  line-height: 1.5;
+}
