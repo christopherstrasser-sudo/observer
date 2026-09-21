@@ -567,3 +567,61 @@ body.overlay-mode {
   .signal-orb { margin-right: 8px; }
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+
+.endpoint-field {
+  display: block;
+  margin-top: 22px;
+}
+
+.endpoint-field > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 8px;
+  color: #657086;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: .12em;
+}
+
+.endpoint-field input {
+  width: 100%;
+  height: 45px;
+  padding: 0 13px;
+  border: 1px solid rgba(113,231,255,.11);
+  outline: 0;
+  border-radius: 10px;
+  color: #cbd4e4;
+  background: rgba(0,0,0,.19);
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  transition: .18s ease;
+}
+
+.endpoint-field input:focus {
+  border-color: rgba(113,231,255,.3);
+  box-shadow: 0 0 0 3px rgba(113,231,255,.045);
+}
+
+.config-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.config-actions .config-button {
+  margin-top: 0;
+  min-height: 66px;
+}
+
+.config-button--secondary {
+  border-color: rgba(169,139,255,.12);
+  background: linear-gradient(100deg, rgba(169,139,255,.07), rgba(113,231,255,.03));
+}
+
+.config-button--secondary:hover {
+  border-color: rgba(169,139,255,.25);
+  background: linear-gradient(100deg, rgba(169,139,255,.1), rgba(113,231,255,.045));
+}
