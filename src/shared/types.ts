@@ -105,6 +105,23 @@ export interface BroadcastConfig {
   team2: TeamBranding;
 }
 
+export interface KillfeedEvent {
+  id: string;
+  killerName: string;
+  killerSteamId?: string;
+  killerSide?: "CT" | "T";
+  victimName: string;
+  victimSteamId?: string;
+  victimSide?: "CT" | "T";
+  weapon: string;
+  headshot: boolean;
+  wallbang: boolean;
+  noscope: boolean;
+  throughSmoke: boolean;
+  source: "external" | "gsi_inferred" | "test";
+  createdAt: number;
+}
+
 export interface BroadcastEvent {
   id: string;
   type: "round_win" | "clutch" | "ace";
@@ -122,6 +139,7 @@ export interface BroadcastState {
   rejectedPackets: number;
   lastGsiSource: string | null;
   broadcastEvents: BroadcastEvent[];
+  killfeed: KillfeedEvent[];
   config: BroadcastConfig;
   serverStartedAt: number;
 }
