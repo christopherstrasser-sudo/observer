@@ -22,7 +22,7 @@ import {
   WifiOff
 } from "lucide-react";
 import { io } from "socket.io-client";
-import type { BroadcastState, GsiPlayer, GsiTeam } from "../shared/types";
+import type { BroadcastEvent, BroadcastState, GsiPlayer, GsiTeam } from "../shared/types";
 
 const emptyState: BroadcastState = {
   gsi: null,
@@ -30,6 +30,7 @@ const emptyState: BroadcastState = {
   packetsReceived: 0,
   rejectedPackets: 0,
   lastGsiSource: null,
+  broadcastEvents: [],
   serverStartedAt: Date.now()
 };
 
@@ -86,6 +87,23 @@ function useBroadcastState() {
 
 function teamLabel(team: GsiTeam | undefined, fallback: string) {
   return team?.name?.trim() || fallback;
+}
+
+function formatRoundClock(rawSeconds?: string | number) {
+  if (rawSeconds === undefined || rawSeconds === null || rawSeconds === "") {
+    return "--:--";
+  }
+
+  const value = Number(rawSeconds);
+  if (!Number.isFinite(value)) {
+    return "--:--";
+  }
+
+  const totalSeconds = Math.max(0, Math.floor(value));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 function weaponLabel(rawName?: string) {
@@ -155,10 +173,18 @@ function getActiveWeapon(player: GsiPlayer) {
 }
 
 function getUtility(player: GsiPlayer) {
-  return Object.values(player.weapons ?? {})
-    .filter((weapon) => weapon.type === "Grenade")
-    .map((weapon) => utilityLabel(weapon.name))
-    .filter((label): label is string => Boolean(label));
+  const counts = new Map<string, number>();
+
+  for (const weapon of Object.values(player.weapons ?? {})) {
+    if (weapon.type !== "Grenade") continue;
+
+    const label = utilityLabel(weapon.name);
+    if (!label) continue;
+
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+
+  return Array.from(counts.entries()).map(([label, count]) => ({ label, count }));
 }
 
 function getTeamPlayers(allPlayers: Record<string, GsiPlayer> | undefined, team: "CT" | "T") {
@@ -207,7 +233,10 @@ function PlayerCard({
             {player.match_stats?.assists ?? 0} A
           </span>
         </div>
-        <div className="player-card__money">${(player.state?.money ?? 0).toLocaleString()}</div>
+        <div className="player-card__economy">
+          <strong>${(player.state?.money ?? 0).toLocaleString()}</strong>
+          <span>EQ ${(player.state?.equip_value ?? 0).toLocaleString()}</span>
+        </div>
       </div>
 
       <div className="player-card__middle">
@@ -237,7 +266,12 @@ function PlayerCard({
       <div className="player-card__bottom">
         <div className="utility-row">
           {utility.length
-            ? utility.map((grenade, index) => <span key={grenade + index}>{grenade}</span>)
+            ? utility.map(({ label, count }) => (
+                <span key={label}>
+                  {label}
+                  {count > 1 ? <b>x{count}</b> : null}
+                </span>
+              ))
             : <span className="utility-empty">NO UTIL</span>}
         </div>
         <div className="status-badges">
@@ -246,6 +280,8 @@ function PlayerCard({
           {focused ? <span className="status-badge status-badge--focus">OBS</span> : null}
         </div>
       </div>
+
+      {!alive ? <span className="player-card__dead-label">ELIMINATED</span> : null}
     </div>
   );
 }
@@ -286,6 +322,18 @@ function TeamRail({
   );
 }
 
+function BroadcastEventBanner({ event }: { event: BroadcastEvent }) {
+  return (
+    <div className={`broadcast-event broadcast-event--${event.type} broadcast-event--${event.side?.toLowerCase() ?? "neutral"}`}>
+      <div className="broadcast-event__eyebrow">
+        {event.type === "ace" ? "HIGHLIGHT" : event.type === "clutch" ? "ROUND DECIDER" : "ROUND COMPLETE"}
+      </div>
+      <strong>{event.title}</strong>
+      {event.subtitle ? <span>{event.subtitle}</span> : null}
+    </div>
+  );
+}
+
 function BroadcastOverlay({ state }: { state: BroadcastState }) {
   const map = state.gsi?.map;
   const ct = map?.team_ct;
@@ -296,6 +344,9 @@ function BroadcastOverlay({ state }: { state: BroadcastState }) {
   const tPlayers = getTeamPlayers(state.gsi?.allplayers, "T");
   const focusedSteamId = state.gsi?.player?.steamid;
   const bombState = state.gsi?.bomb?.state || state.gsi?.round?.bomb;
+  const activeEvent = [...(state.broadcastEvents ?? [])]
+    .reverse()
+    .find((event) => Date.now() - event.createdAt < 5_500);
 
   useEffect(() => {
     document.documentElement.classList.add("overlay-mode");
@@ -318,7 +369,7 @@ function BroadcastOverlay({ state }: { state: BroadcastState }) {
         <div className="scorebug__center">
           <div className="scorebug__round">
             <span>{map?.name?.replace("de_", "").toUpperCase() || "OBSERVER"}</span>
-            <strong>{phase?.phase_ends_in ? Number(phase.phase_ends_in).toFixed(1) : "--:--"}</strong>
+            <strong>{formatRoundClock(phase?.phase_ends_in)}</strong>
             <span>{phase?.phase?.replaceAll("_", " ").toUpperCase() || "WAITING FOR GSI"}</span>
           </div>
           {bombState && bombState !== "undefined" ? (
@@ -332,6 +383,8 @@ function BroadcastOverlay({ state }: { state: BroadcastState }) {
           <span className="scorebug__side">T</span>
         </div>
       </div>
+
+      {activeEvent ? <BroadcastEventBanner event={activeEvent} /> : null}
 
       {ctPlayers.length ? (
         <TeamRail side="CT" players={ctPlayers} focusedSteamId={focusedSteamId} />
@@ -438,7 +491,7 @@ function ControlRoom({ state, socketConnected }: { state: BroadcastState; socket
           <button className="nav-item"><Settings size={18} />Settings</button>
           <div className="build-chip">
             <span>LOCAL CORE</span>
-            <strong>v0.2.1</strong>
+            <strong>v0.3.0</strong>
           </div>
         </div>
       </aside>
@@ -532,7 +585,7 @@ function ControlRoom({ state, socketConnected }: { state: BroadcastState; socket
 
             <div className="match-strip">
               <div><span>PHASE</span><strong>{state.gsi?.phase_countdowns?.phase?.replaceAll("_", " ") || "Waiting"}</strong></div>
-              <div><span>TIMER</span><strong>{state.gsi?.phase_countdowns?.phase_ends_in ? Number(state.gsi.phase_countdowns.phase_ends_in).toFixed(1) + "s" : "—"}</strong></div>
+              <div><span>TIMER</span><strong>{formatRoundClock(state.gsi?.phase_countdowns?.phase_ends_in)}</strong></div>
               <div><span>BOMB</span><strong>{state.gsi?.bomb?.state || state.gsi?.round?.bomb || "—"}</strong></div>
               <div><span>SOURCE</span><strong>{state.lastGsiSource || "—"}</strong></div>
             </div>
