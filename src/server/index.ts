@@ -99,7 +99,7 @@ function normalizeGsiUri(raw: unknown, req: express.Request) {
 
 function buildGsiConfig(uri: string) {
   return [
-    '"Observer v0.2"',
+    '"Observer v0.2.1"',
     "{",
     `  "uri" "${uri}"`,
     '  "timeout" "5.0"',
@@ -140,7 +140,7 @@ app.get("/api/health", (_req, res) => {
     service: "observer",
     version: "0.2.1",
     uptimeSeconds: Math.round(process.uptime()),
-    gsiConnected: state.lastGsiAt !== null && Date.now() - state.lastGsiAt < 5000,
+    gsiConnected: state.lastGsiAt !== null && Date.now() - state.lastGsiAt < 20_000,
     gsiAuth: true
   });
 });
